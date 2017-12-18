@@ -9,5 +9,5 @@ X*.txt store the position of corners extracted with corner deteciton and cluster
 
 # How to run:
 - open and run the birdview.m
-- a panoramic image will be generated with the 1~5.jpg
+- a panoramic image will be generated from the 1~5.jpg
 

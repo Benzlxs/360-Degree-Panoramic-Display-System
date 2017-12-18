@@ -1,0 +1,61 @@
+**************************************************************************
+* FileName:     DM642FOURVEDIO_Log.txt
+* Description:  This file is auto-produced by SEED COFF file conversion tool,
+*               Which have  recorded initialized sector's Information during
+*               the process of conversion.
+* Specificaton: This is a tailored version especially for SEED-VPM642 board, which
+*               have disabled many functions compared to standard version.
+* Version:      1.0C  (C means compact version)
+* Designer:     Howard Chen
+**************************************************************************
+
+==========================================================================
+                Application program global information
+==========================================================================
+The input out file is:   F:\DM642\9.DM642fourvedio\Debug\DM642FOURVEDIO.out
+The output dat file is:  F:\DM642\9.DM642fourvedio\Debug\DM642FOURVEDIO.dat
+Entry point is:          0x00006380
+Total sector length is:  0x00000022
+
+==========================================================================
+                The following is each initialized sector's details
+==========================================================================
+
+The 0 initialized sector's information as following:
+Name is:                      .cinit
+Data length is(Unit: Byte):   0x000009d4
+Destination address is:       0x000066c0
+--------------------------------------------------------------------------
+
+The 1 initialized sector's information as following:
+Name is:                      .text
+Data length is(Unit: Byte):   0x000062c0
+Destination address is:       0x00000400
+--------------------------------------------------------------------------
+
+The 2 initialized sector's information as following:
+Name is:                      .const
+Data length is(Unit: Byte):   0x00000020
+Destination address is:       0x00007ca0
+--------------------------------------------------------------------------
+
+The 3 initialized sector's information as following:
+Name is:                      .switch
+Data length is(Unit: Byte):   0x00000010
+Destination address is:       0x00007cc0
+--------------------------------------------------------------------------
+
+
+
+==========================================================================
+                Statistic information
+==========================================================================
+The have converted sector total number is:             0x00000004
+The dat file total valid data length(Unit: Byte) is:   0x00006cf4
+
+
+==========================================================================
+                End of DM642FOURVEDIO_Log.txt file
+==========================================================================
+
+

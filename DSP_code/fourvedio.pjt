@@ -1,0 +1,58 @@
+; Code Composer Project File, Version 2.0 (do not modify or remove this line)
+
+[Project Settings]
+ProjectDir="F:\DM642\360 view\panonric view - 2013-6-6\"
+ProjectType=Executable
+CPUFamily=TMS320C64XX
+Tool="Compiler"
+Tool="CustomBuilder"
+Tool="DspBiosBuilder"
+Tool="Linker"
+Config="Debug"
+Config="Release"
+
+[Source Files]
+Source="include\correction.h"
+Source="lib\cslDM642.lib"
+Source="lib\dm642bsl.lib"
+Source="lib\rts6400.lib"
+Source="lib\rts64pluse.lib"
+Source="src\_sa7121h.c"
+Source="src\_tvp51xx.c"
+Source="src\dm642main.c"
+Source="src\iic.c"
+Source="src\ves_dm642.asm"
+Source="src\vportcap.c"
+Source="src\vportdis.c"
+Source="DM642vedio.cmd"
+
+["Compiler" Settings: "Debug"]
+Options=-g -q -fr"$(Proj_dir)\obj" -i"$(Proj_dir)\include" -d"_DEBUG" -d"CHIP_DM642" -mv6400
+
+["Compiler" Settings: "Release"]
+Options=-q -o3 -fr"F:\DM642\360 view\panonric view - 2013-6-6\Release" -mv6400
+
+["DspBiosBuilder" Settings: "Debug"]
+Options=-v6x
+
+["DspBiosBuilder" Settings: "Release"]
+Options=-v6x
+
+["Linker" Settings: "Debug"]
+Options=-q -c -heap0x400 -o".\Debug\DM642FOURVEDIO.out" -stack0x400 -w -x -l"rts6400.lib"
+
+["Linker" Settings: "Release"]
+Options=-q -c -m".\Release\SEEDVPM642loop3.map" -o".\Release\SEEDVPM642loop3.out" -w -x
+
+["include\correction.h" Settings: "Debug"]
+ExcludeFromBuild=true
+
+["include\correction.h" Settings: "Release"]
+ExcludeFromBuild=true
+
+["DM642vedio.cmd" Settings: "Debug"]
+LinkOrder=1
+
+["DM642vedio.cmd" Settings: "Release"]
+LinkOrder=1
+

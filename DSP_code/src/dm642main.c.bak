@@ -1,0 +1,700 @@
+
+#include <csl.h>
+#include <csl_emifa.h>
+#include <csl_i2c.h>
+#include <csl_gpio.h>
+#include <csl_irq.h>
+#include <csl_chip.h>
+#include <csl_dat.h>
+#include <csl_cache.h>
+
+#include <math.h>
+
+#include <stdio.h>
+#include <std.h>
+
+#include <McBSP.h>
+
+#include "iic.h"
+#include "vportcap.h"
+#include "vportdis.h"
+#include "sa7121h.h"
+#include "TVP51xx.h"
+#include "dm642.h"
+
+
+
+GPIO_Handle hGpio;
+
+
+
+EMIFA_Config dm642ConfigA ={
+	   0x00052078,/*gblctl EMIFA(B)global control register value */
+	   			  /*将CLK6、4、1使能；将MRMODE置1；使能EK2EN,EK2RATE*/
+	   0xffffffd3,/*cectl0 CE0 space control register value*/
+	   			  /*将CE0空间设为SDRAM*/
+	   0x73a28e01,/*cectl1 CE1 space control register value*/
+	   			  /*Read hold: 1 clock;
+	   			    MTYPE : 0000,选择8位的异步接口
+	   			    Read strobe ：001110；14个clock宽度
+	   			    TA：2 clock; Read setup 2 clock;
+	   			    Write hold :2 clock; Write strobe: 14 clock
+	   			    Write setup :7 clock
+	   			    --					 ---------------
+	   			  	  \		 14c		/1c
+	   			 	   \----------------/ */
+	   0x22a28a22, /*cectl2 CE2 space control register value*/
+       0x22a28a42, /*cectl3 CE3 space control register value*/
+	   0x57115000, /*sdctl SDRAM control register value*/
+	   0x0000081b, /*sdtim SDRAM timing register value*/
+	   0x001faf4d, /*sdext SDRAM extension register value*/
+	   0x00000002, /*cesec0 CE0 space secondary control register value*/
+	   0x00000002, /*cesec1 CE1 space secondary control register value*/
+	   0x00000002, /*cesec2 CE2 space secondary control register value*/
+	   0x00000073 /*cesec3 CE3 space secondary control register value*/	
+};
+
+void GPIO_init()
+{ 
+  //EXINT7 is configured to be falling edge triggered 
+    hGpio = GPIO_open(GPIO_DEV0,GPIO_OPEN_RESET);
+    GPIO_reset(hGpio);
+	GPIO_pinEnable(hGpio,GPIO_PIN0|GPIO_PIN1|GPIO_PIN10);//|GPIO_PIN3  GPIO_PIN7||GPIO_PIN1|GPIO_PIN5|GPIO_PIN6
+    GPIO_pinDirection(hGpio,GPIO_PIN0|GPIO_PIN1|GPIO_PIN10,GPIO_OUTPUT); //|GPIO_PIN1|GPIO_PIN3|GPIO_PIN7
+
+	GPIO_pinWrite(hGpio,GPIO_PIN0,0);
+	GPIO_pinWrite(hGpio,GPIO_PIN10,0);
+
+
+	GPIO_pinWrite(hGpio,GPIO_PIN1,0);
+}
+
+
+/*DM642的IIC的设置结构*/
+I2C_Config DM642IIC_Config = {
+    0,  /* master mode,  i2coar;采用主模式   */
+    0,  /* no interrupt, i2cimr;只写，不读，采用无中断方式*/
+    (20-5), /* scl low time, i2cclkl;  */
+    (20-5), /* scl high time,i2cclkh;  */
+    1,  /* configure later, i2ccnt;*/
+    0,  /* configure later, i2csar;*/
+    0x4ea0, /* master tx mode,     */
+            /* i2c runs free,      */
+            /* 8-bit data + NACK   */
+            /* no repeat mode      */
+    (75-1), /* 2MHz clock, i2cpsc  */
+
+};
+
+CHIP_Config DM642percfg = {
+	CHIP_VP2+\
+	CHIP_VP1+\
+	CHIP_VP0+\
+	CHIP_I2C
+//	CHIP_MCASP0
+};
+
+I2C_Handle dm642i2c;
+int portNumber;
+extern SA7121H_ConfParams sa7121hPAL[45];
+extern SA7121H_ConfParams sa7121hNTSC[45];
+
+
+/*图像句柄的声明*/
+VP_Handle vpHchannel0;
+VP_Handle vpHchannel1;
+VP_Handle vpHchannel2;
+
+
+/*确定图像的参数*/
+int numPixels = 720;//每行720个像素
+int numLines  = 576;//每帧576行（PAL）
+
+extern Uint8 capChaAYSpace1[720*576];
+extern Uint8 capChaACbSpace1[360*576];
+extern Uint8 capChaACrSpace1[360*576];
+
+extern Uint8 capChaAYSpace2[720*576];
+extern Uint8 capChaACbSpace2[360*576];
+extern Uint8 capChaACrSpace2[360*576];
+
+extern Uint8 capChaAYSpace3[720*576];
+extern Uint8 capChaACbSpace3[360*576];
+extern Uint8 capChaACrSpace3[360*576];
+
+extern Uint8 capChaAYSpace4[720*576];
+extern Uint8 capChaACbSpace4[360*576];
+extern Uint8 capChaACrSpace4[360*576];
+
+extern Uint8 disChaAYSpace[720*576];
+extern Uint8 disChaACbSpace[360*576];
+extern Uint8 disChaACrSpace[360*576];
+
+
+
+#pragma DATA_SECTION(tempSpace, ".tempSpace") 
+Uint8 tempSpace[720*72];
+
+/*图像格式标志*/
+Uint8 NTSCorPAL = 0;
+
+extern far void vectors();
+
+extern volatile Uint32 capNewFrame2A;
+extern volatile Uint32 capNewFrame2B;
+extern volatile Uint32 capNewFrame0A;
+extern volatile Uint32 capNewFrame0B;
+extern volatile Uint32 disNewFrame;
+
+
+/*此程序可将四个采集口的数据经过Video Port0送出*/
+void main()
+{
+	volatile Uint32 test;
+    int	i;
+	int j;
+	int k;
+    /*-------------------------------------------------------*/
+	/* perform all initializations                           */
+	/*-------------------------------------------------------*/
+
+	/*Initialise CSL，初始化CSL库*/
+	CSL_init();
+	CHIP_config(&DM642percfg);
+
+
+	/* Unlock PERCFG through PCFGLOCK */
+    *((unsigned long *)0x1b3f018) = 0x10c0010c;
+    
+    /* Enable VP0-VP2, I2C and McASP0 in PERCFG */
+    *((unsigned long *)0x1b3f000) = 0x7C;
+    
+    /* Read back PERCFG */
+    test = *((unsigned long *)0x1b3f000);
+    
+    /* Wait at least 128 CPU cycles */
+    DM642_wait(128);
+/*----------------------------------------------------------*/
+	/*EMIFA的初始化，将CE0设为SDRAM空间，CE1设为异步空间
+	 注，DM642支持的是EMIFA，而非EMIF*/
+	EMIFA_config(&dm642ConfigA);
+
+	GPIO_init();
+
+	        /* Enable caching of SDRAM */
+   CACHE_enableCaching(CACHE_EMIFA_CE00);
+   CACHE_enableCaching(CACHE_EMIFA_CE01);
+/*----------------------------------------------------------*/
+
+	/*中断向量表的初始化*/
+	//Point to the IRQ vector table
+    IRQ_setVecs(vectors);
+    IRQ_nmiEnable();
+    IRQ_globalEnable();
+    IRQ_map(IRQ_EVT_VINT0, 11);
+    IRQ_map(IRQ_EVT_VINT1, 12);
+	IRQ_map(IRQ_EVT_VINT2, 13);
+    IRQ_reset(IRQ_EVT_VINT0);
+    IRQ_reset(IRQ_EVT_VINT1);
+    IRQ_reset(IRQ_EVT_VINT2);	
+    /*打开一个数据拷贝的数据通路*/
+    DAT_open(DAT_CHAANY, DAT_PRI_LOW, DAT_OPEN_2D);	
+
+
+
+
+  
+    portNumber = 1;
+	vpHchannel1 = bt656_8bit_ncfd(portNumber);
+
+	/*进行IIC的初始化*/
+	dm642i2c = I2C_open(I2C_PORT0,I2C_OPEN_RESET);
+	I2C_config(dm642i2c,&DM642IIC_Config);
+/*----------------------------------------------------------*/
+
+    
+	
+
+	NTSCorPAL = 0;
+
+/*----------------------------------------------------------*/
+	portNumber = 2;
+    bt656_8bit_ncfc2(portNumber);
+	
+	portNumber = 0;
+	
+    bt656_8bit_ncfc2(portNumber);
+
+	SAA7121_Set(NTSCorPAL);
+
+	bt656_capture_start2();
+	bt656_capture_start0();
+	/*等待第一帧数据采集完成*/
+
+
+	bt656_display_start(vpHchannel1);
+
+
+
+    TVP51XX_Set(1);
+	TVP51XX_Set(2);
+	TVP51XX_Set(3);
+	TVP51XX_Set(4);
+	
+
+
+	for(;;)
+	{
+		/*当采集区的数据已经采集好，而显示缓冲区的数据已空*/
+		if((capNewFrame0A == 1)&&(capNewFrame0B == 1)&&(capNewFrame2A == 1)&&(capNewFrame2B == 1)&&(disNewFrame == 1))
+		{
+			/*将数据装入显示缓冲区，并清采集完成的标志*/
+			capNewFrame2B =0;
+			capNewFrame2A =0;
+			capNewFrame0B =0;
+			capNewFrame0A =0;
+			disNewFrame =0;
+
+			//第一路
+	 for(i=0;i<4;i++)
+	    {
+	    if(i<2)
+	        {
+	            for(j=i*144;j<(i+1)*144;j++)
+	            {
+		        DAT_copy((void *)(capChaAYSpace1 + j * numPixels), 
+		        (void *)(tempSpace + ((j-i*144)/2)* numPixels), numPixels);
+		        j++;
+		        }
+		        
+		        for(j=i*72;j<(i+1)*72;j++)
+		        for(k=0;k<720;k++)
+		        {
+		          *(Uint8 *)(disChaAYSpace +(j) *numPixels +(k/2))= *(Uint8 *)(tempSpace+(j-i*72)*numPixels+k); 
+		          k++; 
+		        } 
+              }
+              
+		       else
+		     { 
+		        for(j=i*144;j<(i+1)*144;j++)
+	            {
+		        DAT_copy((void *)(capChaAYSpace1 + j * numPixels), 
+		        (void *)(tempSpace + ((j-i*144)/2)* numPixels), numPixels);
+		        j++;
+		        }
+		        
+		        for(j=144+i*72;j<144+(i+1)*72;j++)
+		        for(k=0;k<720;k++)
+		        {
+		          *(Uint8 *)(disChaAYSpace +(j) *numPixels +(k/2))= *(Uint8 *)(tempSpace+(j-i*72-144)*numPixels+k); 
+		          k++; 
+		        }
+		        
+              }
+		    }
+		for(i=0;i<2;i++)
+	    {
+	    if(i<1)
+	        {
+	            for(j=0;j<288;j++)
+	            {
+		        DAT_copy((void *)(capChaACbSpace1 + j * numPixels/2), 
+		        (void *)(tempSpace + (j/2)* numPixels/2), numPixels/2);
+		        j++;
+		        }
+		        
+		        for(j=0;j<144;j++)
+		        for(k=0;k<360;k++)
+		        {
+		          *(Uint8 *)(disChaACbSpace +(j)*numPixels/2 +(k/2))= *(Uint8 *)(tempSpace+j*numPixels/2+k); 
+		          k++; 
+		        } 
+		    	  
+		    	                    
+		        for(j=0;j<288;j++)
+	            {
+		        DAT_copy((void *)(capChaACrSpace1 + j * numPixels/2), 
+		        (void *)(tempSpace + (j/2)* numPixels/2), numPixels/2);
+		        j++;
+		        }
+		        
+		        for(j=0;j<144;j++)
+		        for(k=0;k<360;k++)
+		        {
+		          *(Uint8 *)(disChaACrSpace +(j)*numPixels/2 +(k/2))= *(Uint8 *)(tempSpace+j*numPixels/2+k); 
+		          k++; 
+		        }     
+		        
+              }
+		       else
+		     { 
+		        for(j=288;j<576;j++)
+	            {
+		        DAT_copy((void *)(capChaACbSpace1 + j * numPixels/2), 
+		        (void *)(tempSpace + ((j-288)/2)* numPixels/2), numPixels/2);
+		        j++;
+		        }
+		        
+		        for(j=288;j<432;j++)
+		        for(k=0;k<360;k++)
+		        {
+		          *(Uint8 *)(disChaACbSpace +(j)*numPixels/2 +(k/2))= *(Uint8 *)(tempSpace+(j-288)*numPixels/2+k); 
+		          k++; 
+		        }
+		        for(j=288;j<576;j++)
+	            {
+		        DAT_copy((void *)(capChaACrSpace1 + j * numPixels/2), 
+		        (void *)(tempSpace + ((j-288)/2)* numPixels/2), numPixels/2);
+		        j++;
+		        }
+		        
+		        for(j=288;j<432;j++)
+		        for(k=0;k<360;k++)
+		        {
+		          *(Uint8 *)(disChaACrSpace +(j)*numPixels/2 +(k/2))= *(Uint8 *)(tempSpace+(j-288)*numPixels/2+k); 
+		          k++; 
+		        }
+              }
+		    }  
+		   
+//////第二路视频 
+
+		for(i=0;i<4;i++)
+	    {
+	    if(i<2)
+	        {
+	            for(j=i*144;j<(i+1)*144;j++)
+	            {
+		        DAT_copy((void *)(capChaAYSpace2 + j * numPixels), 
+		        (void *)(tempSpace + ((j-i*144)/2)* numPixels), numPixels);
+		        j++;
+		        }
+		        for(j=i*72;j<(i+1)*72;j++)
+		        for(k=0;k<720;k++)
+		        {
+		          *(Uint8 *)(disChaAYSpace +(j) *numPixels+360 +(k/2))= *(Uint8 *)(tempSpace+(j-i*72)*numPixels+k); 
+		          k++; 
+		        } 
+              }
+		       else
+		     { 
+		        for(j=i*144;j<(i+1)*144;j++)
+	            {
+		        DAT_copy((void *)(capChaAYSpace2 + j * numPixels), 
+		        (void *)(tempSpace + ((j-i*144)/2)* numPixels), numPixels);
+		        j++;
+		        }
+		        
+		        for(j=144+i*72;j<144+(i+1)*72;j++)
+		        for(k=0;k<720;k++)
+		        {
+		          *(Uint8 *)(disChaAYSpace +(j) *numPixels+360 +(k/2))= *(Uint8 *)(tempSpace+(j-i*72-144)*numPixels+k); 
+		          k++; 
+		        }
+		        
+              }
+		    }
+		for(i=0;i<2;i++)
+	    {
+	    if(i<1)
+	        {
+	            for(j=0;j<288;j++)
+	            {
+		        DAT_copy((void *)(capChaACbSpace2 + j * numPixels/2), 
+		        (void *)(tempSpace + (j/2)* numPixels/2), numPixels/2);
+		        j++;
+		        }
+		        
+		        for(j=0;j<144;j++)
+		        for(k=0;k<360;k++)
+		        {
+		          *(Uint8 *)(disChaACbSpace +(j)*numPixels/2+180 +(k/2))= *(Uint8 *)(tempSpace+j*numPixels/2+k); 
+		          k++; 
+		        } 
+		    	  
+		    	                    
+		        for(j=0;j<288;j++)
+	            {
+		        DAT_copy((void *)(capChaACrSpace2 + j * numPixels/2), 
+		        (void *)(tempSpace + (j/2)* numPixels/2), numPixels/2);
+		        j++;
+		        }
+		        
+		        for(j=0;j<144;j++)
+		        for(k=0;k<360;k++)
+		        {
+		          *(Uint8 *)(disChaACrSpace +(j)*numPixels/2+180 +(k/2))= *(Uint8 *)(tempSpace+j*numPixels/2+k); 
+		          k++; 
+		        }     
+		        
+              }
+              
+		       else
+		     { 
+		        for(j=288;j<576;j++)
+	            {
+		        DAT_copy((void *)(capChaACbSpace2 + j * numPixels/2), 
+		        (void *)(tempSpace + ((j-288)/2)* numPixels/2), numPixels/2);
+		        j++;
+		        }
+		        
+		        for(j=288;j<432;j++)
+		        for(k=0;k<360;k++)
+		        {
+		          *(Uint8 *)(disChaACbSpace +(j)*numPixels/2+180 +(k/2))= *(Uint8 *)(tempSpace+(j-288)*numPixels/2+k); 
+		          k++; 
+		        }
+		        
+		        
+		        for(j=288;j<576;j++)
+	            {
+		        DAT_copy((void *)(capChaACrSpace2 + j * numPixels/2), 
+		        (void *)(tempSpace + ((j-288)/2)* numPixels/2), numPixels/2);
+		        j++;
+		        }
+		        
+		        for(j=288;j<432;j++)
+		        for(k=0;k<360;k++)
+		        {
+		          *(Uint8 *)(disChaACrSpace +(j)*numPixels/2+180 +(k/2))= *(Uint8 *)(tempSpace+(j-288)*numPixels/2+k); 
+		          k++; 
+		        }
+              }
+		    } 
+				    
+//////第三路视频
+
+		for(i=0;i<4;i++)
+	    {
+	    if(i<2)
+	        {
+	            for(j=i*144;j<(i+1)*144;j++)
+	            {
+		        DAT_copy((void *)(capChaAYSpace3 + j * numPixels), 
+		        (void *)(tempSpace + ((j-i*144)/2)* numPixels), numPixels);
+		        j++;
+		        }
+		        
+		        for(j=i*72;j<(i+1)*72;j++)
+		        for(k=0;k<720;k++)
+		        {
+		          *(Uint8 *)(disChaAYSpace +(j+144) *numPixels +(k/2))= *(Uint8 *)(tempSpace+(j-i*72)*numPixels+k); 
+		          k++; 
+		        } 
+              }
+              
+		       else
+		     { 
+		        for(j=i*144;j<(i+1)*144;j++)
+	            {
+		        DAT_copy((void *)(capChaAYSpace3 + j * numPixels), 
+		        (void *)(tempSpace + ((j-i*144)/2)* numPixels), numPixels);
+		        j++;
+		        }
+		        
+		        for(j=144+i*72;j<144+(i+1)*72;j++)
+		        for(k=0;k<720;k++)
+		        {
+		          *(Uint8 *)(disChaAYSpace +(j+144) *numPixels +(k/2))= *(Uint8 *)(tempSpace+(j-i*72-144)*numPixels+k); 
+		          k++; 
+		        }
+		        
+              }
+		    }
+		for(i=0;i<2;i++)
+	    {
+	    if(i<1)
+	        {
+	            for(j=0;j<288;j++)
+	            {
+		        DAT_copy((void *)(capChaACbSpace3 + j * numPixels/2), 
+		        (void *)(tempSpace + (j/2)* numPixels/2), numPixels/2);
+		        j++;
+		        }
+		        
+		        for(j=0;j<144;j++)
+		        for(k=0;k<360;k++)
+		        {
+		          *(Uint8 *)(disChaACbSpace +(j+144)*numPixels/2 +(k/2))= *(Uint8 *)(tempSpace+j*numPixels/2+k); 
+		          k++; 
+		        } 
+		    	  
+		    	                    
+		        for(j=0;j<288;j++)
+	            {
+		        DAT_copy((void *)(capChaACrSpace3 + j * numPixels/2), 
+		        (void *)(tempSpace + (j/2)* numPixels/2), numPixels/2);
+		        j++;
+		        }
+		        
+		        for(j=0;j<144;j++)
+		        for(k=0;k<360;k++)
+		        {
+		          *(Uint8 *)(disChaACrSpace +(j+144)*numPixels/2 +(k/2))= *(Uint8 *)(tempSpace+j*numPixels/2+k); 
+		          k++; 
+		        }     
+		        
+              }
+		       else
+		     { 
+		        for(j=288;j<576;j++)
+	            {
+		        DAT_copy((void *)(capChaACbSpace3 + j * numPixels/2), 
+		        (void *)(tempSpace + ((j-288)/2)* numPixels/2), numPixels/2);
+		        j++;
+		        }
+		        
+		        for(j=288;j<432;j++)
+		        for(k=0;k<360;k++)
+		        {
+		          *(Uint8 *)(disChaACbSpace +(j+144)*numPixels/2 +(k/2))= *(Uint8 *)(tempSpace+(j-288)*numPixels/2+k); 
+		          k++; 
+		        }
+		        for(j=288;j<576;j++)
+	            {
+		        DAT_copy((void *)(capChaACrSpace3 + j * numPixels/2), 
+		        (void *)(tempSpace + ((j-288)/2)* numPixels/2), numPixels/2);
+		        j++;
+		        }
+		        
+		        for(j=288;j<432;j++)
+		        for(k=0;k<360;k++)
+		        {
+		          *(Uint8 *)(disChaACrSpace +(j+144)*numPixels/2 +(k/2))= *(Uint8 *)(tempSpace+(j-288)*numPixels/2+k); 
+		          k++; 
+		        }
+              }
+		    }  
+		   
+//////第四路视频 
+
+		for(i=0;i<4;i++)
+	    {
+	    if(i<2)
+	        {
+	            for(j=i*144;j<(i+1)*144;j++)
+	            {
+		        DAT_copy((void *)(capChaAYSpace4 + j * numPixels), 
+		        (void *)(tempSpace + ((j-i*144)/2)* numPixels), numPixels);
+		        j++;
+		        }
+		        for(j=i*72;j<(i+1)*72;j++)
+		        for(k=0;k<720;k++)
+		        {
+		          *(Uint8 *)(disChaAYSpace +(j+144) *numPixels+360 +(k/2))= *(Uint8 *)(tempSpace+(j-i*72)*numPixels+k); 
+		          k++; 
+		        } 
+              }
+		       else
+		     { 
+		        for(j=i*144;j<(i+1)*144;j++)
+	            {
+		        DAT_copy((void *)(capChaAYSpace4 + j * numPixels), 
+		        (void *)(tempSpace + ((j-i*144)/2)* numPixels), numPixels);
+		        j++;
+		        }
+		        
+		        for(j=144+i*72;j<144+(i+1)*72;j++)
+		        for(k=0;k<720;k++)
+		        {
+		          *(Uint8 *)(disChaAYSpace +(j+144) *numPixels+360 +(k/2))= *(Uint8 *)(tempSpace+(j-i*72-144)*numPixels+k); 
+		          k++; 
+		        }
+		        
+              }
+		    }
+		for(i=0;i<2;i++)
+	    {
+	    if(i<1)
+	        {
+	            for(j=0;j<288;j++)
+	            {
+		        DAT_copy((void *)(capChaACbSpace4 + j * numPixels/2), 
+		        (void *)(tempSpace + (j/2)* numPixels/2), numPixels/2);
+		        j++;
+		        }
+		        
+		        for(j=0;j<144;j++)
+		        for(k=0;k<360;k++)
+		        {
+		          *(Uint8 *)(disChaACbSpace +(j+144)*numPixels/2+180 +(k/2))= *(Uint8 *)(tempSpace+j*numPixels/2+k); 
+		          k++; 
+		        } 
+		    	  
+		    	                    
+		        for(j=0;j<288;j++)
+	            {
+		        DAT_copy((void *)(capChaACrSpace4 + j * numPixels/2), 
+		        (void *)(tempSpace + (j/2)* numPixels/2), numPixels/2);
+		        j++;
+		        }
+		        
+		        for(j=0;j<144;j++)
+		        for(k=0;k<360;k++)
+		        {
+		          *(Uint8 *)(disChaACrSpace +(j+144)*numPixels/2+180 +(k/2))= *(Uint8 *)(tempSpace+j*numPixels/2+k); 
+		          k++; 
+		        }     
+		        
+              }
+              
+		       else
+		     { 
+		        for(j=288;j<576;j++)
+	            {
+		        DAT_copy((void *)(capChaACbSpace4 + j * numPixels/2), 
+		        (void *)(tempSpace + ((j-288)/2)* numPixels/2), numPixels/2);
+		        j++;
+		        }
+		        
+		        for(j=288;j<432;j++)
+		        for(k=0;k<360;k++)
+		        {
+		          *(Uint8 *)(disChaACbSpace +(j+144)*numPixels/2+180 +(k/2))= *(Uint8 *)(tempSpace+(j-288)*numPixels/2+k); 
+		          k++; 
+		        }
+		        
+		        
+		        for(j=288;j<576;j++)
+	            {
+		        DAT_copy((void *)(capChaACrSpace4 + j * numPixels/2), 
+		        (void *)(tempSpace + ((j-288)/2)* numPixels/2), numPixels/2);
+		        j++;
+		        }
+		        
+		        for(j=288;j<432;j++)
+		        for(k=0;k<360;k++)
+		        {
+		          *(Uint8 *)(disChaACrSpace +(j+144)*numPixels/2+180 +(k/2))= *(Uint8 *)(tempSpace+(j-288)*numPixels/2+k); 
+		          k++; 
+		        }
+              }
+		    } 
+					
+          }	
+
+		}
+		
+}
+
+
+/*----------------------------------------------------------*/
+
+void DM642_wait(Uint32 delay)
+{
+    volatile Uint32 i, n;
+    
+    n = 0;
+    for (i = 0; i < delay; i++)
+    {
+        n = n + 1;
+    }
+}
+
+/* Spin in a delay loop for delay microseconds */
+void DM642_waitusec(Uint32 delay)
+{
+    DM642_wait(delay * 21);
+}
+

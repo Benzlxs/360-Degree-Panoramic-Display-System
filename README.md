@@ -11,3 +11,5 @@ X*.txt store the position of corners extracted with corner deteciton and cluster
 - open and run the birdview.m
 - a panoramic image will be generated from the 1~5.jpg
 
+# DSP code
+The DSP code is written in C and run real-time in DM642. The hardware should have four channels of input vedio and one output channel. Input cameras are fisheye camera and output is connected to central display screen in the car. The performance vedio can be [found](https://www.youtube.com/watch?v=WkR6sbVMnkQ&t=4s) 
